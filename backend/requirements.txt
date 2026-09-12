@@ -1,0 +1,45 @@
+# Lucid Voice — backend dependencies
+#
+# Web / core (lightweight; safe to import at module top-level):
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+httpx==0.28.1
+numpy==2.2.1
+
+# ---------------------------------------------------------------------------
+# Heavy / optional local-ML dependencies.
+# These pull in large native wheels and model frameworks (torch, etc.) and can
+# take significant time/disk to install. They are LAZY-IMPORTED inside the
+# functions that need them, so the app imports and runs even when these are
+# absent (e.g. for `python -m py_compile` or DEMO_MODE).
+# ---------------------------------------------------------------------------
+kuzu==0.7.1                     # embedded graph database
+sentence-transformers==3.3.1    # local embeddings
+faster-whisper==1.1.1           # local STT
+# Local TTS / XTTS-v2 voice clone. Use the MAINTAINED idiap fork "coqui-tts"
+# (NOT the archived "TTS" package). torchaudio + torchcodec provide audio IO,
+# and torchcodec needs FFmpeg installed on the system (e.g. `brew install ffmpeg`
+# on macOS). XTTS runs on CPU on Apple Silicon (MPS is unreliable for XTTS).
+coqui-tts==0.27.5               # Coqui XTTS-v2 voice clone (idiap fork)
+torchaudio==2.11.0              # audio IO for coqui-tts
+torchcodec==0.14.0              # audio decode/encode (requires system FFmpeg)
+anthropic==0.42.0               # optional cloud LLM provider (opt-in via env)
+
+# ---------------------------------------------------------------------------
+# Sponsor integrations. All OPT-IN and lazy-imported/guarded, so the app still
+# imports and runs fully offline (airplane mode) when these are absent or the
+# integration is disabled via env. Install to demo the respective feature.
+# ---------------------------------------------------------------------------
+sentry-sdk[fastapi]==2.20.0     # Sentry error monitoring (no-op without SENTRY_DSN)
+redis==5.2.1                    # Redis Stack client (vector KNN + cache + memory)
+# Arize Phoenix — LOCAL LLM tracing + eval (opt-in via PHOENIX_ENABLED). Pulls in
+# OpenTelemetry + OpenInference. Also needs a system Redis STACK (RediSearch) for
+# the Redis vector index, installed separately (see .env.example).
+arize-phoenix==7.9.0
+arize-phoenix-otel==0.7.0
+openinference-semantic-conventions==0.1.12
+opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-http

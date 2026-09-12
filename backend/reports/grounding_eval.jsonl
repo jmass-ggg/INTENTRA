@@ -1,0 +1,6 @@
+{"case": "sunday-call", "gold": 2, "submodular": 0.5, "topk": 1.0, "delta": -0.5}
+{"case": "dinner-time", "gold": 2, "submodular": 1.0, "topk": 0.5, "delta": 0.5}
+{"case": "play-with-mateo", "gold": 2, "submodular": 0.5, "topk": 0.0, "delta": 0.5}
+{"case": "morning-garden", "gold": 2, "submodular": 1.0, "topk": 0.5, "delta": 0.5}
+{"case": "friday-plans", "gold": 2, "submodular": 1.0, "topk": 0.0, "delta": 1.0}
+{"case": "after-lunch-rest", "gold": 2, "submodular": 1.0, "topk": 0.5, "delta": 0.5}
