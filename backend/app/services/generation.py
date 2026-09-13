@@ -19,6 +19,10 @@ import json
 import re
 from typing import Any
 
+from app.domain.intent import IntentFrame
+from app.domain.passport import CommunicationPassport
+from app.prompts.expression import EXPRESSION_SYSTEM_PROMPT
+
 # AAC reconstruction system role (the person confirms; we never auto-speak).
 SYSTEM_PROMPT = """You assist a person who cannot easily speak. They know what \
 they want to say but can only produce a few words or sounds. Reconstruct their \
@@ -171,3 +175,145 @@ class GenerationService:
 
         # Final fallback so /generate never hard-fails.
         return self._fallback(fragments)
+
+    # --- NEW: generate_expression (single best expression from IntentFrame) ---
+
+    def generate_expression(
+        self,
+        intent_frame: IntentFrame,
+        passport_context: CommunicationPassport,
+        conversation_context: str = "",
+    ) -> dict[str, Any]:
+        """Generate a single best expression from a verified IntentFrame.
+
+        Uses EXPRESSION_SYSTEM_PROMPT focused on wording a verified intent.
+        Returns: {"text": str, "used_evidence": list[str]}
+        Checks avoided_expressions and retries once if violated.
+        Falls back to generate_candidates()[0] if new method fails.
+
+        Requirements: 5.1, 5.2, 5.3, 5.4, 5.5
+        """
+        from app.tracing import llm_span
+
+        # Build the user prompt for expression generation
+        def _build_expression_prompt(frame: IntentFrame, passport: CommunicationPassport, context: str) -> str:
+            intent_json = frame.model_dump_json(indent=2)
+            passport_json = passport.model_dump_json(indent=2)
+            
+            return (
+                f"IntentFrame (authoritative meaning):\n{intent_json}\n\n"
+                f"Communication Passport (wording guide):\n{passport_json}\n\n"
+                f"Conversation Context:\n{context.strip() or '(none)'}\n\n"
+                f"Generate the natural expression now."
+            )
+
+        user_prompt = _build_expression_prompt(intent_frame, passport_context, conversation_context)
+        model = getattr(self.llm, "model", "") or ""
+
+        # First attempt
+        try:
+            with llm_span("expression_generation", model=model, input_value=user_prompt) as _s:
+                raw = self.llm.generate(user_prompt, system=EXPRESSION_SYSTEM_PROMPT)
+                _s.set_output(raw)
+            
+            result = self._parse_expression_response(raw)
+            if result and self._check_avoided_expressions(result["text"], passport_context):
+                return result
+            
+            # If avoided expression detected, retry once
+            if result:
+                retry_prompt = (
+                    f"The previous expression contained an avoided phrase. Please try again.\n\n"
+                    f"{user_prompt}"
+                )
+                try:
+                    raw2 = self.llm.generate(retry_prompt, system=EXPRESSION_SYSTEM_PROMPT)
+                    result2 = self._parse_expression_response(raw2)
+                    if result2 and self._check_avoided_expressions(result2["text"], passport_context):
+                        return result2
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Fallback: use generate_candidates()[0]
+        fragments = intent_frame.concepts or ["I need a moment."]
+        context_str = conversation_context or ""
+        retrieved_facts = self._build_fallback_facts(passport_context)
+        
+        candidates = self.generate_candidates(
+            fragments=fragments,
+            context=context_str,
+            retrieved_facts=retrieved_facts,
+            valid_node_ids=[],
+            style_prompt=""
+        )
+        
+        if candidates:
+            return {
+                "text": candidates[0]["text"],
+                "used_evidence": candidates[0].get("grounded_node_ids", [])
+            }
+        
+        # Ultimate fallback
+        fallback_text = " ".join(fragments).strip() or "I need a moment."
+        fallback_text = fallback_text[0].upper() + fallback_text[1:]
+        if fallback_text[-1] not in ".?!":
+            fallback_text += "."
+        
+        return {
+            "text": fallback_text,
+            "used_evidence": []
+        }
+
+    def _parse_expression_response(self, raw: str) -> dict[str, Any] | None:
+        """Parse the expression generation response into {"text": str, "used_evidence": list[str]}."""
+        if not raw:
+            return None
+        
+        # Strip reasoning blocks and markdown
+        text = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"```(?:json)?", "", text)
+        text = text.strip()
+        
+        # Try to find JSON object
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end <= start:
+            return None
+        
+        try:
+            data = json.loads(text[start : end + 1])
+            if isinstance(data, dict) and "text" in data:
+                return {
+                    "text": str(data["text"]).strip(),
+                    "used_evidence": data.get("used_evidence", []) if isinstance(data.get("used_evidence"), list) else []
+                }
+        except Exception:
+            return None
+        
+        return None
+
+    def _check_avoided_expressions(self, text: str, passport: CommunicationPassport) -> bool:
+        """Check if text contains any avoided expressions. Returns True if safe, False if violated."""
+        if not passport.avoided_expressions:
+            return True
+        
+        text_lower = text.lower()
+        for avoided in passport.avoided_expressions:
+            if avoided.lower() in text_lower:
+                return False
+        
+        return True
+
+    def _build_fallback_facts(self, passport: CommunicationPassport) -> str:
+        """Build a simple RETRIEVED FACTS block from the passport for fallback."""
+        lines = []
+        
+        for person in passport.people[:3]:  # Top 3 people
+            lines.append(f"[{person.id}] {person.name} is someone in your life.")
+        
+        for pref in passport.preferred_expressions[:2]:  # Top 2 preferences
+            lines.append(f'You prefer to say: "{pref}".')
+        
+        return "\n".join(lines) if lines else "(no specific facts)"

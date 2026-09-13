@@ -280,4 +280,114 @@ export function getPassport(personId: string): Promise<CommunicationPassport> {
   return get<CommunicationPassport>(`/passport/${encodeURIComponent(personId)}`);
 }
 
+export function addPassportPreference(req: { person_id: string; expression: string }): Promise<{ ok: boolean }> {
+  return post<{ person_id: string; expression: string }, { ok: boolean }>("/passport/preference", req);
+}
+
+export function addPassportAvoid(req: { person_id: string; expression: string }): Promise<{ ok: boolean }> {
+  return post<{ person_id: string; expression: string }, { ok: boolean }>("/passport/avoid", req);
+}
+
+// --- Communication Pipeline API (Intentra) ---
+
+export type IntentType = "request" | "answer" | "question" | "explain" | "emotion" | "social" | "emergency" | "unknown";
+export type EffortMode = "full" | "assist" | "low_effort" | "emergency";
+export type ConfidenceBand = "high" | "medium" | "low";
+
+export interface IntentFrame {
+  action: IntentType;
+  concepts: string[];
+  listener_id?: string;
+  listener_name?: string;
+  emotional_state?: string;
+  temporal_reference?: string;
+  location_reference?: string;
+  confidence: number;
+  unresolved: string[];
+  evidence: string[];
+}
+
+export interface IdentityResult {
+  intent_match: number;
+  grounding_score: number;
+  identity_match: number;
+  hallucination_risk: number;
+  violated_rules: string[];
+  safe_to_present: boolean;
+}
+
+export interface CommunicationInput {
+  person_id: string;
+  fragments: string[];
+  intent_type?: IntentType;
+  listener?: string;
+  emotion?: string;
+  partial_speech?: string;
+  selected_symbols?: string[];
+  conversation_context?: string;
+  effort_mode?: EffortMode;
+}
+
+export interface CommunicationResponse {
+  status: "ready" | "clarification_required";
+  intent?: IntentFrame;
+  expression?: { text: string; used_evidence: string[] };
+  identity?: IdentityResult;
+  confidence_band?: ConfidenceBand;
+  requires_confirmation?: boolean;
+  question?: string;
+  options?: string[];
+  alternatives?: Array<{ text: string }>;
+}
+
+export interface ConversationOutcome {
+  session_id: string;
+  person_id: string;
+  success: boolean;
+  intent_frame?: IntentFrame;
+  expression?: string;
+  repair_needed: boolean;
+}
+
+export interface RepairPlan {
+  strategy: string;
+  question?: string;
+  options: Array<{ label: string; value: string }>;
+  rebuilt_expression?: string;
+}
+
+export function communicationGenerate(req: CommunicationInput): Promise<CommunicationResponse> {
+  return post<CommunicationInput, CommunicationResponse>("/communication/generate", req);
+}
+
+export function communicationConfirm(req: { person_id: string; expression: string; intent: IntentFrame }): Promise<{ ok: boolean }> {
+  return post<{ person_id: string; expression: string; intent: IntentFrame }, { ok: boolean }>("/communication/confirm", req);
+}
+
+export function conversationOutcome(req: ConversationOutcome): Promise<{ ok: boolean }> {
+  return post<ConversationOutcome, { ok: boolean }>("/conversation/outcome", req);
+}
+
+export function communicationRepair(req: { person_id: string; intent_frame: IntentFrame; original_expression: string }): Promise<RepairPlan> {
+  return post<{ person_id: string; intent_frame: IntentFrame; original_expression: string }, RepairPlan>("/communication/repair", req);
+}
+
+// --- Fast Response API ---
+
+export interface FastResponseRequest {
+  partner_speech: string;
+  person_id: string;
+}
+
+export type FastResponseType = "binary" | "choice" | "pipeline";
+
+export interface FastResponseResult {
+  type: FastResponseType;
+  options?: string[];
+}
+
+export function communicationFastResponse(req: FastResponseRequest): Promise<FastResponseResult> {
+  return post<FastResponseRequest, FastResponseResult>("/communication/fast-response", req);
+}
+
 export { ApiError };

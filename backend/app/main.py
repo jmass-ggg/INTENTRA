@@ -174,6 +174,33 @@ def _get(name: str):
             from app.services.passport import PassportService
 
             inst = PassportService(_get("graph"), _get("style"), _get("learning"))
+        elif name == "identity_guard":
+            from app.services.identity_guard import IdentityGuard
+
+            inst = IdentityGuard(_get("style"))
+        elif name == "confidence_router":
+            from app.services.confidence import ConfidenceRouter
+
+            inst = ConfidenceRouter()
+        elif name == "communication":
+            from app.services.communication import CommunicationService
+
+            inst = CommunicationService(
+                _get("intent"),
+                _get("retrieval"),
+                _get("generation"),
+                _get("identity_guard"),
+                _get("passport"),
+                _get("confidence_router"),
+            )
+        elif name == "effort":
+            from app.services.effort import EffortService
+
+            inst = EffortService(_get("graph"), _get("passport"))
+        elif name == "fast_response":
+            from app.services.fast_response import FastResponseEngine
+
+            inst = FastResponseEngine()
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.warning("Could not initialize %r: %s", name, exc)
         inst = None
@@ -275,6 +302,13 @@ def generate(req: GenerateRequest) -> GenerateResponse:
     confidence gate) then LLM generation. On low confidence, ABSTAIN and ask for
     one more word instead of guessing.
     """
+    # Validate person_id before processing
+    try:
+        validate_person_id(req.person_id)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc))
+    
     global latest_trace
     t0 = time.time()
 
@@ -427,6 +461,13 @@ def speak(req: SpeakRequest) -> SpeakResponse:
     Cache-first also makes DEMO_MODE instant: pre-rendered demo lines (see
     data/prerender_demo.py) live in the same cache, so they return immediately.
     """
+    # Validate person_id before processing
+    try:
+        validate_person_id(req.person_id)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc))
+    
     cache = get_cache_service()
     if cache is not None:
         try:
@@ -449,6 +490,13 @@ def speak(req: SpeakRequest) -> SpeakResponse:
 @app.post("/confirm", response_model=ConfirmResponse)
 def confirm(req: ConfirmRequest) -> ConfirmResponse:
     """Confirm an utterance was spoken; reinforce the graph (online learning)."""
+    # Validate person_id before processing
+    try:
+        validate_person_id(req.person_id)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc))
+    
     learning = get_learning_service()
     if learning is None:
         return ConfirmResponse(changed_node_ids=[], changed_edge_ids=[])
@@ -496,6 +544,13 @@ def assistant_turn(req: AssistantTurnRequest) -> AssistantTurnResponse:
     sees a summary of what the graph already holds and where it is thin, and asks
     one warm question targeting a gap. Degrades to a fallback question offline.
     """
+    # Validate person_id before processing
+    try:
+        validate_person_id(req.person_id)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc))
+    
     learning = get_learning_service()
     fallback = "Tell me about the people who matter most to you."
     if learning is None:
@@ -514,6 +569,13 @@ def assistant_turn(req: AssistantTurnRequest) -> AssistantTurnResponse:
 @app.post("/consolidate", response_model=ConsolidateResponse)
 def consolidate(req: ConsolidateRequest) -> ConsolidateResponse:
     """Consolidate recent Events into durable Preferences (scheduled/offline)."""
+    # Validate person_id before processing
+    try:
+        validate_person_id(req.person_id)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc))
+    
     learning = get_learning_service()
     if learning is None:
         return ConsolidateResponse(new_node_ids=[], new_edge_ids=[])
@@ -531,6 +593,13 @@ def consolidate(req: ConsolidateRequest) -> ConsolidateResponse:
 @app.get("/style/{person_id}", response_model=StyleProfile)
 def style(person_id: str) -> StyleProfile:
     """Return the person's current learned communication-style profile."""
+    # Validate person_id before processing
+    try:
+        validate_person_id(person_id)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc))
+    
     svc = _get("style")
     if svc is None:
         return StyleProfile(person_id=person_id)
@@ -557,6 +626,13 @@ def stt(req: STTRequest) -> STTResponse:
 @app.post("/enroll", response_model=EnrollResponse)
 def enroll(req: EnrollRequest) -> EnrollResponse:
     """Store a person's reference wav (base64) for later voice cloning."""
+    # Validate person_id before processing
+    try:
+        validate_person_id(req.person_id)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc))
+    
     try:
         from app.providers.tts import save_reference
 
@@ -570,6 +646,13 @@ def enroll(req: EnrollRequest) -> EnrollResponse:
 @app.get("/graph/{person_id}", response_model=GraphResponse)
 def graph(person_id: str) -> GraphResponse:
     """Return the person's knowledge graph (nodes + edges)."""
+    # Validate person_id before processing
+    try:
+        validate_person_id(person_id)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc))
+    
     svc = get_graph_service()
     if svc is None:
         return GraphResponse(nodes=[], edges=[])
@@ -710,6 +793,334 @@ def add_avoided(req: dict) -> dict:
         return {"ok": False, "reason": str(exc)}
 
 
+@app.post("/communication/generate")
+def communication_generate(req: CommunicationInput) -> dict:
+    """Process a full communication request through the Intentra pipeline.
+    
+    Pipeline flow:
+    1. IntentService → interpret intent
+    2. ConfidenceRouter → determine confidence band
+    3. If LOW: return clarification immediately (no generation)
+    4. If MEDIUM: generate alternatives
+    5. If HIGH: generate expression + identity check + single response
+    6. One silent regeneration if identity.safe_to_present is False
+    
+    Always sets requires_confirmation: true
+    Requirements: 9.1, 9.2, 9.3, 9.4
+    """
+    # Validate person_id before processing
+    try:
+        validate_person_id(req.person_id)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc))
+    
+    communication_svc = _get("communication")
+    
+    # Degraded mode: service unavailable
+    # The individual services (IntentService, GenerationService, etc.) handle None
+    # dependencies internally and provide graceful degradation, so a None
+    # CommunicationService only happens in extreme cases
+    if communication_svc is None:
+        logger.warning("CommunicationService unavailable")
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=503,
+            detail="Communication service is currently unavailable"
+        )
+    
+    try:
+        return communication_svc.process(req)
+    except Exception as exc:
+        logger.error("communication_generate failed: %s", exc)
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=500,
+            detail=f"Communication processing failed: {str(exc)}"
+        )
+
+
+@app.post("/communication/confirm")
+def communication_confirm(req: dict) -> dict:
+    """Record that a user confirmed and spoke an expression.
+    
+    Request body: {
+        "person_id": str,
+        "text": str,
+        "context": str (optional),
+        "partner": str (optional),
+        "intent_frame": dict (optional)
+    }
+    
+    Reuses existing confirm logic from LearningService.
+    Requirements: 9.5
+    """
+    person_id = req.get("person_id", "")
+    text = req.get("text", "")
+    context = req.get("context")
+    partner = req.get("partner")
+    
+    # Validate person_id before processing
+    try:
+        validate_person_id(person_id)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc))
+    
+    if not text:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="text cannot be empty")
+    
+    # Reuse existing confirm logic
+    learning = get_learning_service()
+    if learning is None:
+        return {"ok": True, "changed_node_ids": [], "changed_edge_ids": []}
+    
+    try:
+        result = learning.on_confirm(person_id, text, context or "", partner, None)
+        return {
+            "ok": True,
+            "changed_node_ids": result.get("changed_node_ids", []),
+            "changed_edge_ids": result.get("changed_edge_ids", []),
+        }
+    except Exception as exc:
+        logger.error("communication_confirm failed: %s", exc)
+        return {"ok": False, "reason": str(exc)}
+
+
+@app.post("/communication/repair")
+def communication_repair(req: dict) -> dict:
+    """Initiate conversation repair after communication failure.
+    
+    Request body: {
+        "person_id": str,
+        "original_intent": dict (IntentFrame),
+        "original_expression": str,
+        "listener_response": str (optional)
+    }
+    
+    Stub until Phase 10 (RepairService implementation).
+    Requirements: 9.6
+    """
+    person_id = req.get("person_id", "")
+    
+    # Validate person_id before processing
+    try:
+        validate_person_id(person_id)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc))
+    
+    # Stub response until Phase 10
+    logger.info("communication_repair called (stub) for person_id=%s", person_id)
+    return {
+        "status": "stub",
+        "message": "Repair service will be implemented in Phase 10",
+        "strategy": None,
+        "options": [],
+    }
+
+
+@app.post("/conversation/outcome")
+def conversation_outcome(req: dict) -> dict:
+    """Record the outcome of a conversation attempt (success or failure).
+    
+    Request body: {
+        "person_id": str,
+        "session_id": str,
+        "success": bool,
+        "intent_frame": dict (optional),
+        "expression": str (optional),
+        "repair_needed": bool (optional)
+    }
+    
+    Records outcome and calls LearningService for adaptive learning.
+    Requirements: 9.7, 9.8
+    """
+    person_id = req.get("person_id", "")
+    success = req.get("success", False)
+    
+    # Validate person_id before processing
+    try:
+        validate_person_id(person_id)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc))
+    
+    logger.info(
+        "conversation_outcome: person_id=%s, success=%s",
+        person_id,
+        success
+    )
+    
+    # Record outcome with LearningService for adaptive learning
+    learning = get_learning_service()
+    if learning is not None:
+        try:
+            # Use the learning service to record the outcome
+            # This allows the system to learn from successes and failures
+            expression = req.get("expression")
+            context = req.get("context", "")
+            
+            if success and expression:
+                # Record successful communication
+                learning.on_confirm(person_id, expression, context, None, None)
+        except Exception as exc:
+            logger.warning("Failed to record outcome with learning service: %s", exc)
+    
+    return {
+        "ok": True,
+        "recorded": True,
+        "repair_needed": req.get("repair_needed", False),
+    }
+
+
+@app.get("/accessibility/{person_id}")
+def get_accessibility(person_id: str) -> dict:
+    """Get effort mode and emergency phrases for a person.
+    
+    Returns effort mode configuration and emergency phrases.
+    Emergency phrases are returned even when all AI services are None.
+    
+    Requirements: 11.7
+    """
+    # Validate person_id before processing
+    try:
+        validate_person_id(person_id)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc))
+    
+    effort_svc = _get("effort")
+    
+    # Even if service is None, we can return defaults
+    if effort_svc is None:
+        logger.warning("EffortService unavailable, returning defaults")
+        from app.services.effort import EffortService
+        return {
+            "effort_mode": "full",
+            "emergency_phrases": EffortService.DEFAULT_EMERGENCY_PHRASES,
+            "low_effort_buttons": [
+                "YES",
+                "NO",
+                "HELP",
+                "MORE",
+                "STOP",
+                "PAIN",
+                "HOME",
+                "DRINK",
+                "TOILET",
+            ],
+        }
+    
+    try:
+        return effort_svc.get_effort_config(person_id)
+    except Exception as exc:
+        logger.error("get_accessibility(%r) failed: %s", person_id, exc)
+        # Fallback to defaults even on error
+        from app.services.effort import EffortService
+        return {
+            "effort_mode": "full",
+            "emergency_phrases": EffortService.DEFAULT_EMERGENCY_PHRASES,
+            "low_effort_buttons": [
+                "YES",
+                "NO",
+                "HELP",
+                "MORE",
+                "STOP",
+                "PAIN",
+                "HOME",
+                "DRINK",
+                "TOILET",
+            ],
+        }
+
+
+@app.patch("/accessibility/{person_id}")
+def update_accessibility(person_id: str, config: dict) -> dict:
+    """Save effort mode preference for a person.
+    
+    Request body: {
+        "effort_mode": str ("full" | "assist" | "low_effort" | "emergency")
+    }
+    
+    Requirements: 11.7
+    """
+    # Validate person_id before processing
+    try:
+        validate_person_id(person_id)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc))
+    
+    effort_svc = _get("effort")
+    
+    if effort_svc is None:
+        logger.warning("EffortService unavailable")
+        return {"ok": False, "reason": "service_unavailable"}
+    
+    try:
+        effort_svc.save_effort_config(person_id, config)
+        return {"ok": True}
+    except Exception as exc:
+        logger.error("update_accessibility(%r) failed: %s", person_id, exc)
+        return {"ok": False, "reason": str(exc)}
+
+
+@app.post("/communication/fast-response")
+def fast_response(req: dict) -> dict:
+    """Analyze partner speech for fast response options.
+    
+    Detects simple binary and choice questions without full AI pipeline.
+    Uses pure regex/pattern matching for immediate response options.
+    
+    Request body: {
+        "partner_speech": str,
+        "person_id": str
+    }
+    
+    Returns one of:
+    - {"type": "binary", "options": ["Yes", "No", "A little", "Explain"]}
+    - {"type": "choice", "options": [X, Y, "Neither", "Something else"]}
+    - {"type": "pipeline"} for complex inputs
+    
+    Requirements: 16.4
+    """
+    partner_speech = req.get("partner_speech", "")
+    person_id = req.get("person_id", "")
+    
+    # Validate person_id before processing
+    try:
+        validate_person_id(person_id)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc))
+    
+    if not partner_speech:
+        # Empty speech routes to pipeline
+        return {"type": "pipeline"}
+    
+    fast_response_svc = _get("fast_response")
+    
+    # Degraded mode: service unavailable (shouldn't happen as it has no dependencies)
+    if fast_response_svc is None:
+        logger.warning("FastResponseEngine unavailable, routing to pipeline")
+        return {"type": "pipeline"}
+    
+    try:
+        result = fast_response_svc.analyze(partner_speech)
+        logger.info(
+            "Fast response analysis: type=%s, partner_speech='%s'",
+            result.get("type"),
+            partner_speech[:50]
+        )
+        return result
+    except Exception as exc:
+        logger.error("fast_response failed: %s", exc)
+        # On error, route to pipeline
+        return {"type": "pipeline"}
+
+
 @app.get("/debug/sentry-error")
 def debug_sentry_error() -> dict:
     """Deliberately raise so Sentry (when a DSN is configured) captures it.
@@ -717,6 +1128,17 @@ def debug_sentry_error() -> dict:
     With SENTRY_DSN set, the FastAPI integration reports this unhandled exception
     to Sentry; with no DSN it simply returns a normal 500 and nothing is sent.
     Used to demonstrate error monitoring live.
+    
+    This endpoint is only available when DEBUG_ENDPOINTS_ENABLED=true in the
+    environment. Never enable this in production.
     """
+    # Gate behind debug flag for production safety
+    if not settings.debug_endpoints_enabled:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=404,
+            detail="Not found"
+        )
+    
     add_breadcrumb("debug", "about to raise a test error", level="warning")
     raise RuntimeError("Intentra test error — Sentry capture check.")

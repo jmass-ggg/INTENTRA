@@ -31,6 +31,7 @@ from typing import Any
 import numpy as np
 
 from app.config import settings
+from app.domain.intent import IntentFrame
 
 # Recency time-constant (seconds). recency = exp(-(now - last_seen) / TAU).
 RECENCY_TAU_SECONDS = 7 * 24 * 3600  # ~7 days
@@ -599,3 +600,37 @@ class RetrievalService:
             "topk": ranked[:budget],
             "vector_backend": self.last_vector_backend,
         }
+
+    def retrieve_for_intent(
+        self,
+        person_id: str,
+        intent_frame: IntentFrame,
+        conversation_context: str = "",
+    ) -> dict[str, Any]:
+        """Retrieve grounded context using an IntentFrame.
+
+        Internally constructs fragments list from intent_frame.concepts
+        and calls existing retrieve() method.
+        Preserves all existing retrieval logic.
+
+        Requirements: 5.4
+        """
+        # Extract fragments from the IntentFrame concepts
+        fragments = intent_frame.concepts or []
+        
+        # Build situation from IntentFrame if available
+        situation = None
+        if intent_frame.listener_name:
+            # Create a simple object with present_people for partner detection
+            class SimpleSituation:
+                def __init__(self, people):
+                    self.present_people = people
+            situation = SimpleSituation([intent_frame.listener_name])
+        
+        # Call the existing retrieve method
+        return self.retrieve(
+            person_id=person_id,
+            fragments=fragments,
+            context=conversation_context,
+            situation=situation
+        )

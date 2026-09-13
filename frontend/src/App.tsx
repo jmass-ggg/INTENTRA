@@ -2,7 +2,8 @@ import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom"
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { CaretDown } from "@phosphor-icons/react";
 import ConversationView from "./views/ConversationView";
-import GraphView from "./views/GraphView";
+import CommunicateView from "./views/CommunicateView";
+import TeachIntentraView from "./views/TeachIntentraView";
 import PassportView from "./views/PassportView";
 import { DUR, EASE_OUT } from "./lib/motion";
 import logoMark from "./assets/logo-mark.png";
@@ -11,7 +12,6 @@ const NAV_ITEMS = [
   { to: "/communicate", label: "Communicate", end: false },
   { to: "/passport", label: "Passport", end: false },
   { to: "/teach", label: "Teach", end: false },
-  { to: "/graph", label: "Graph", end: false },
 ];
 
 function TopBar() {
@@ -103,10 +103,12 @@ export default function App() {
             style={{ height: "100%" }}
           >
             <Routes location={location}>
-              <Route path="/" element={<ConversationView />} />
-              <Route path="/conversation" element={<Navigate to="/" replace />} />
+              <Route path="/" element={<Navigate to="/communicate" replace />} />
+              <Route path="/communicate" element={<CommunicateView />} />
+              <Route path="/teach" element={<TeachIntentraView />} />
+              <Route path="/conversation" element={<ConversationView />} />
               <Route path="/passport" element={<PassportView />} />
-              <Route path="/graph" element={<GraphView />} />
+              <Route path="/graph" element={<Navigate to="/passport" replace />} />
             </Routes>
           </motion.div>
         </AnimatePresence>

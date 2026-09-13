@@ -21,6 +21,7 @@ class Settings(BaseSettings):
 
     # --- Mode ---
     demo_mode: bool = False
+    debug_endpoints_enabled: bool = False
 
     # --- LM Studio (local LLM) ---
     lm_studio_base_url: str = "http://localhost:1234/v1"
